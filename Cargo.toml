@@ -10,16 +10,21 @@
 [workspace]
 
 [package]
-name = "xmip-template-rust"
+name = "xmip-core-library-ssh"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/IlleNilsson/xmip-template-rust"
-description = "Starter template for a Rust Xmip module repository."
+repository = "https://github.com/IlleNilsson/xmip-core-library-ssh"
+description = "The SSH wire types for Xmip: boolean, string, mpint and name-list, read and written."
 publish = false
 
 [lib]
 path = "src/lib.rs"
+
+[dependencies]
+# The estate's encoding primitives: the byte cursor and writer the SSH types
+# are read off and laid out beside, and the error a refusal travels in.
+codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
 [lints.rust]
 # forbid, not deny: a module has no business writing unsafe. The one exception
