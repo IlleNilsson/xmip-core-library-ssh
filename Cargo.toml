@@ -15,7 +15,7 @@ version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/IlleNilsson/xmip-core-library-ssh"
-description = "The SSH wire types for Xmip: boolean, string, mpint and name-list, read and written."
+description = "SSH for Xmip: the wire types, the transport layer, user authentication, a session channel, and keys, signatures and fingerprints."
 publish = false
 
 [lib]
@@ -23,8 +23,29 @@ path = "src/lib.rs"
 
 [dependencies]
 # The estate's encoding primitives: the byte cursor and writer the SSH types
-# are read off and laid out beside, and the error a refusal travels in.
+# are read off and laid out beside, base64 for a fingerprint, and the random
+# bytes a cookie, padding and key are drawn from.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
+# The peer's identification line read under its ceiling (`net::read`), and
+# the error a refusal travels in, a connection's keeping its kind.
+net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
+# The cryptography: one key-exchange curve, one cipher suite (aes256-ctr
+# with hmac-sha2-256), and the three key types a signature is checked with
+# (RFC 8709, RFC 5656, RFC 8332).
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek = "2"
+p256 = { version = "0.13", features = ["ecdsa"] }
+# RSA's own SHA-256 (`rsa::sha2`): rsa 0.9, the newest release, is built
+# on the digest generation before sha2 0.11's.
+rsa = { version = "0.9", features = ["sha2"] }
+sha2 = "0.11"
+aes = "0.9"
+ctr = "0.10"
+hmac = "0.13"
+
+[dev-dependencies]
+# The tests generate an RSA key.
+rand = "0.8"
 
 [lints.rust]
 # forbid, not deny: a module has no business writing unsafe. The one exception

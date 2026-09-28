@@ -1,32 +1,55 @@
 #![forbid(unsafe_code)]
 
-//! The SSH wire types (RFC 4251 section 5), read and written.
+//! SSH for Xmip: the wire types, the transport layer, user authentication,
+//! a session channel, and the keys, signatures and fingerprints every end
+//! of SSH in the estate reads.
 //!
 //! ```text
-//! boolean     one byte, zero is false
-//! uint32      four bytes, big-endian            codec's u32_be
-//! uint64      eight bytes, big-endian           codec's u64_be
-//! string      a uint32 length and that many bytes
-//! mpint       a string holding a two's-complement big-endian integer
-//! name-list   a string of comma-separated names
+//! the wire types (RFC 4251 section 5)
+//!   read.rs         SshRead: boolean, string, text, mpint, name-list off codec's cursor
+//!   write.rs        SshWrite: the same laid out beside codec's byte writer
+//! the transport layer (RFC 4253)
+//!   packet.rs       Conn: the binary packet protocol over a TCP connection
+//!   cipher.rs       aes256-ctr with hmac-sha2-256, and the key derivation
+//!   kex.rs          curve25519-sha256 with an ssh-ed25519 host key
+//! above it
+//!   userauth.rs     RFC 4252: a password or a public key, and the signed data
+//!   channel.rs      RFC 4254: one session channel and a subsystem over it
+//! keys
+//!   key.rs          PublicKey: ssh-ed25519, ecdsa-sha2-nistp256, ssh-rsa, and
+//!                   their signatures checked, Ed25519 strictly
+//!   fingerprint.rs  Fingerprint: SHA256:<base64>, as OpenSSH prints it
 //! ```
 //!
-//! [`SshRead`] reads them off codec's cursor and [`SshWrite`] lays them out
-//! beside codec's byte writer, so a message is built and taken apart the
-//! way every other binary protocol in the estate is.
+//! One algorithm is offered on each axis of the key exchange, so a peer
+//! that speaks nothing else cannot connect. The SFTP transport runs its
+//! file protocol over [`channel::Channel`]; the ssh-key gate checks
+//! [`key::PublicKey`] signatures over [`userauth::SignedData`]; the ssh-key
+//! identifier reads a [`Fingerprint`].
 //!
-//! Until 2026-09-24 the encoding was written twice: the SFTP transport read
-//! and wrote it for its key exchange, user authentication and channels, and
-//! the ssh-key gate read it again for the key blobs, signature blobs and
-//! signed data it checks. The packet framing (RFC 4253 section 6) is the
-//! transport's alone and stays with it; what a message means stays with
-//! the protocol or the gate that reads it.
+//! Until 2026-09-24 the wire types were written twice, by the SFTP
+//! transport and the ssh-key gate. Until 2026-09-28 the transport layer sat
+//! in the SFTP transport, and the key blob, the Ed25519 check (not strict
+//! there), the signature blob, the fingerprint and the signed data were
+//! each written two or three times across it, the ssh-key gate and the
+//! ssh-key identifier.
 //!
-//! A refusal is codec's [`codec::CodecError`], which a capability already
-//! turns into its own error.
+//! A refusal is [`net::NetError`]: a connection's failure keeps its kind,
+//! and anything a peer sent that is not SSH is the peer's, never retried.
 
+pub mod channel;
+pub mod cipher;
+mod fingerprint;
+pub mod kex;
+pub mod key;
+pub mod packet;
 mod read;
+pub mod userauth;
 mod write;
 
+pub use fingerprint::Fingerprint;
 pub use read::SshRead;
 pub use write::SshWrite;
+
+/// What SSH answers, or why it did not.
+pub type Result<T> = core::result::Result<T, net::NetError>;
