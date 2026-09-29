@@ -311,7 +311,7 @@ mod tests {
         let mut request = Vec::new();
         request
             .byte(USERAUTH_REQUEST)
-            .string(b"partner")
+            .string(b"party")
             .string(CONNECTION.as_bytes())
             .string(b"password")
             .boolean(false)
@@ -319,7 +319,7 @@ mod tests {
         let who = admit(&request, &[0u8; 32])
             .expect("read")
             .expect("admitted");
-        assert_eq!(who.user, "partner");
+        assert_eq!(who.user, "party");
         assert!(who.fingerprint.is_none());
     }
 }
