@@ -144,7 +144,10 @@ mod tests {
         let mut hole = Vec::new();
         hole.string(b"aes256-ctr,,aes128-ctr");
 
-        assert!(Cursor::new(&empty).name_list().expect("empty").is_empty());
+        assert_eq!(
+            Cursor::new(&empty).name_list().expect("empty"),
+            [] as [&str; 0]
+        );
         let error = Cursor::new(&hole).name_list().expect_err("a hole");
         assert!(error.message.contains("empty name"), "{error}");
     }
