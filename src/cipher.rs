@@ -5,7 +5,7 @@
 //! with `hmac-sha2-256` for integrity (RFC 4253 section 6.3, RFC 6668): the
 //! packet is encrypted with AES-256 in counter mode and a SHA-256 HMAC over
 //! the sequence number and the cleartext packet rides after it. The keys and
-//! initialisation vectors come from the shared secret and the exchange hash
+//! initialization vectors come from the shared secret and the exchange hash
 //! through the key derivation of RFC 4253 section 7.2.
 
 use std::io::{BufReader, Read};
