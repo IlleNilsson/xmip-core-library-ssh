@@ -43,6 +43,7 @@ mod fingerprint;
 pub mod kex;
 pub mod key;
 pub mod packet;
+pub mod private_key;
 mod read;
 pub mod userauth;
 mod write;

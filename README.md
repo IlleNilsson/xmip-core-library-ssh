@@ -13,6 +13,7 @@ gate concludes from a key stay with the transport and the gate.
 | `cipher` | `aes256-ctr` with `hmac-sha2-256` (RFC 4253 section 6.3, RFC 6668), and the key derivation of section 7.2 |
 | `kex` | The key exchange, both ends: `curve25519-sha256` (RFC 8731) with an `ssh-ed25519` host key (RFC 8709), one name offered on every axis |
 | `userauth` | RFC 4252, both ends: a password or an Ed25519 key, `serve` admitting a key only where its signature verifies; `signed_data` writes what a public-key authentication signs (section 7) and `SignedData::read` takes it apart |
+| `private_key` | A private key as OpenSSH keeps it, `openssh-key-v1` armored as `OPENSSH PRIVATE KEY`: `ed25519` reads one unencrypted Ed25519 key, what a Location's `key` secret holds (ADR-0019, amendment 2026-10-29), refusing an encrypted one in words; `written` writes one |
 | `channel::Channel` | One session channel and a subsystem over it (RFC 4254 section 6.5) as a byte stream, a frame reassembled across channel messages, and the close from both ends |
 | `key::PublicKey` | A key blob — `ssh-ed25519`, `ecdsa-sha2-nistp256`, `ssh-rsa` — and the check of a signature blob made with it: Ed25519 strictly, RSA under `rsa-sha2-256` only, SHA-1 refused by name; `signature_blob` and `sign_ed25519` write one |
 | `Fingerprint` | `SHA256:<base64>` as OpenSSH prints it, of a blob or read back from text, padded or not |
