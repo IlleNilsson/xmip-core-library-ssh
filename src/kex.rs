@@ -44,6 +44,10 @@ pub struct Exchanged {
     /// The session identifier: the exchange hash of the first key exchange,
     /// what a public-key signature is made over.
     pub session_id: Vec<u8>,
+    /// The server's host key blob, its signature over the exchange verified:
+    /// what a client holds the server to, pinned on first contact (ADR-0019,
+    /// amendment 2026-10-28).
+    pub host_key: Vec<u8>,
 }
 
 /// The `SSH_MSG_KEXINIT` payload: a cookie and the one-name lists this
@@ -161,7 +165,10 @@ pub fn client(conn: &mut Conn, v_c: &str, v_s: &str) -> Result<Exchanged> {
         crate::cipher::suite(&k_mpint, &hash, &hash, false)?,
         crate::cipher::suite(&k_mpint, &hash, &hash, true)?,
     );
-    Ok(Exchanged { session_id: hash })
+    Ok(Exchanged {
+        session_id: hash,
+        host_key: k_s,
+    })
 }
 
 /// Drive the server's half of the key exchange over `conn`, signing with
@@ -209,7 +216,10 @@ pub fn server(conn: &mut Conn, host: &SigningKey, v_c: &str, v_s: &str) -> Resul
         crate::cipher::suite(&k_mpint, &hash, &hash, true)?,
         crate::cipher::suite(&k_mpint, &hash, &hash, false)?,
     );
-    Ok(Exchanged { session_id: hash })
+    Ok(Exchanged {
+        session_id: hash,
+        host_key: k_s,
+    })
 }
 
 /// Verify the host's signature blob over `hash` with the host key blob
