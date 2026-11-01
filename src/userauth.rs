@@ -7,12 +7,15 @@
 //! [`SignedData::read`] takes apart — so what the server keeps, the key's
 //! fingerprint, the signature and the session identifier, is what an
 //! identity gate reads back to present the peer. A password authentication
-//! keeps only the name.
+//! keeps only the name, and is admitted only where the check the server is
+//! handed admits the user and the password offered (`net::login`); until
+//! 2026-11-01 any password was.
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
 use ed25519_dalek::SigningKey;
 use net::NetError;
+use net::login::Offered;
 
 use crate::kex::{SERVICE_ACCEPT, SERVICE_REQUEST};
 use crate::key::{self, ED25519, PublicKey};
@@ -30,6 +33,12 @@ const USERAUTH_SUCCESS: u8 = 52;
 const CONNECTION: &str = "ssh-connection";
 const USERAUTH: &str = "ssh-userauth";
 const PUBLICKEY: &str = "publickey";
+const PASSWORD: &str = "password";
+
+/// The requests a client is answered before it is let go: `OpenSSH`'s
+/// own `MaxAuthTries`, so a password cannot be guessed at on one
+/// connection without end.
+pub const MOST_ATTEMPTS: usize = 6;
 
 /// Who authenticated, and by what.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,6 +131,23 @@ pub fn request_service(conn: &mut Conn) -> Result<()> {
     }
 }
 
+/// Ask to be `user` presenting nothing, the `none` method (RFC 4252
+/// section 5.2): what a client with no secret asks, which a server that
+/// checks who logs in turns down.
+///
+/// # Errors
+/// Where the server turned it down, as Xmip's own server does.
+pub fn none(conn: &mut Conn, user: &str) -> Result<()> {
+    let mut request = Vec::new();
+    request
+        .byte(USERAUTH_REQUEST)
+        .string(user.as_bytes())
+        .string(CONNECTION.as_bytes())
+        .string(b"none");
+    conn.send(&request)?;
+    admitted(conn)
+}
+
 /// Authenticate as `user` with `password`.
 ///
 /// # Errors
@@ -132,7 +158,7 @@ pub fn password(conn: &mut Conn, user: &str, secret: &str) -> Result<()> {
         .byte(USERAUTH_REQUEST)
         .string(user.as_bytes())
         .string(CONNECTION.as_bytes())
-        .string(b"password")
+        .string(PASSWORD.as_bytes())
         .boolean(false)
         .string(secret.as_bytes());
     conn.send(&request)?;
@@ -173,13 +199,19 @@ fn admitted(conn: &mut Conn) -> Result<()> {
 }
 
 /// Serve one authentication over `conn`, `session_id` already settled, and
-/// say who it was. The first well-formed credential is admitted — a key
-/// only where its signature verifies over the signed data — and what to
-/// make of who it was is the caller's.
+/// say who it was. A password is admitted only where `check` admits the
+/// user and the password offered; a key only where its signature verifies
+/// over the signed data, and what to make of the key is the gate's. A
+/// client is answered at most [`MOST_ATTEMPTS`] requests.
 ///
 /// # Errors
-/// Where a message was out of order or a signature did not verify.
-pub fn serve(conn: &mut Conn, session_id: &[u8]) -> Result<Authenticated> {
+/// Where a message was out of order, a signature did not verify, or the
+/// client was turned down [`MOST_ATTEMPTS`] times.
+pub fn serve(
+    conn: &mut Conn,
+    session_id: &[u8],
+    check: &dyn Fn(&Offered<'_>) -> bool,
+) -> Result<Authenticated> {
     let request = conn.expect(SERVICE_REQUEST, "a service request")?;
     if Cursor::new(&request[1..]).string()? != USERAUTH.as_bytes() {
         return Err(NetError::new("a service request that was not for userauth"));
@@ -188,9 +220,9 @@ pub fn serve(conn: &mut Conn, session_id: &[u8]) -> Result<Authenticated> {
     accept.byte(SERVICE_ACCEPT).string(USERAUTH.as_bytes());
     conn.send(&accept)?;
 
-    loop {
+    for _ in 0..MOST_ATTEMPTS {
         let message = conn.expect(USERAUTH_REQUEST, "an authentication request")?;
-        if let Some(who) = admit(&message, session_id)? {
+        if let Some(who) = admit(&message, session_id, check)? {
             conn.send(&[USERAUTH_SUCCESS])?;
             return Ok(who);
         }
@@ -201,19 +233,35 @@ pub fn serve(conn: &mut Conn, session_id: &[u8]) -> Result<Authenticated> {
             .boolean(false);
         conn.send(&failure)?;
     }
+    Err(NetError::new(format!(
+        "a client turned down {MOST_ATTEMPTS} times"
+    )))
 }
 
 /// Whether a request is a credential this end admits, and who it names;
-/// `None` where the method is one it lets the client try again after.
-fn admit(message: &[u8], session_id: &[u8]) -> Result<Option<Authenticated>> {
+/// `None` where it is turned down and the client may try again.
+fn admit(
+    message: &[u8],
+    session_id: &[u8],
+    check: &dyn Fn(&Offered<'_>) -> bool,
+) -> Result<Option<Authenticated>> {
     let mut reader = Cursor::new(&message[1..]);
     let user = reader.text()?.to_string();
     let service = reader.text()?;
     let method = reader.text()?;
     match method {
-        "password" => {
-            let _has = reader.boolean()?;
-            let _secret = reader.string()?;
+        PASSWORD => {
+            // A change of password (the flag set) is not offered here.
+            if reader.boolean()? || service != CONNECTION {
+                return Ok(None);
+            }
+            let secret = reader.text()?;
+            if !check(&Offered {
+                user: &user,
+                secret,
+            }) {
+                return Ok(None);
+            }
             Ok(Some(Authenticated {
                 user,
                 fingerprint: None,
@@ -250,6 +298,7 @@ fn admit(message: &[u8], session_id: &[u8]) -> Result<Option<Authenticated>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use net::login::{nobody, only};
 
     #[test]
     fn signed_data_reads_back_as_what_it_says() {
@@ -292,34 +341,53 @@ mod tests {
             message
         };
 
-        let who = admit(&request("xmip"), &session)
+        let who = admit(&request("xmip"), &session, &*nobody())
             .expect("verified")
             .expect("admitted");
         assert_eq!(who.fingerprint, Some(public.fingerprint()));
         assert!(
-            admit(&request("xmip"), &[0u8; 32]).is_err(),
+            admit(&request("xmip"), &[0u8; 32], &*nobody()).is_err(),
             "another session"
         );
         assert!(
-            admit(&request("someone"), &session).is_err(),
+            admit(&request("someone"), &session, &*nobody()).is_err(),
             "another user"
         );
     }
 
-    #[test]
-    fn a_password_request_names_the_user_and_keeps_no_key() {
+    fn password_request(user: &str, secret: &str) -> Vec<u8> {
         let mut request = Vec::new();
         request
             .byte(USERAUTH_REQUEST)
-            .string(b"party")
+            .string(user.as_bytes())
             .string(CONNECTION.as_bytes())
-            .string(b"password")
+            .string(PASSWORD.as_bytes())
             .boolean(false)
-            .string(b"secret");
-        let who = admit(&request, &[0u8; 32])
+            .string(secret.as_bytes());
+        request
+    }
+
+    #[test]
+    fn a_password_the_check_admits_names_the_user_and_keeps_no_key() {
+        let check = only("party", "pencil");
+        let who = admit(&password_request("party", "pencil"), &[0u8; 32], &*check)
             .expect("read")
             .expect("admitted");
         assert_eq!(who.user, "party");
         assert!(who.fingerprint.is_none());
+    }
+
+    #[test]
+    fn a_password_the_check_does_not_admit_is_turned_down() {
+        let check = only("party", "pencil");
+        for (user, secret) in [("party", "pen"), ("mallory", "pencil")] {
+            let turned = admit(&password_request(user, secret), &[0u8; 32], &*check);
+            assert!(turned.expect("read").is_none(), "{user}");
+        }
+        let anyone = admit(&password_request("party", "pencil"), &[0u8; 32], &*nobody());
+        assert!(
+            anyone.expect("read").is_none(),
+            "a check that admits no one"
+        );
     }
 }
