@@ -7,15 +7,16 @@
 //! [`SignedData::read`] takes apart — so what the server keeps, the key's
 //! fingerprint, the signature and the session identifier, is what an
 //! identity gate reads back to present the peer. A password authentication
-//! keeps only the name, and is admitted only where the check the server is
-//! handed admits the user and the password offered (`net::login`); until
-//! 2026-11-01 any password was.
+//! keeps only the name. Either is admitted only where the check the server
+//! is handed admits it (`net::login`): the user and the password offered,
+//! or the user and the key whose signature verified; until 2026-11-01 any
+//! password was, and any key whose signature verified.
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
 use ed25519_dalek::SigningKey;
 use net::NetError;
-use net::login::Offered;
+use net::login::{Offer, Offered, OfferedKey};
 
 use crate::kex::{SERVICE_ACCEPT, SERVICE_REQUEST};
 use crate::key::{self, ED25519, PublicKey};
@@ -201,7 +202,7 @@ fn admitted(conn: &mut Conn) -> Result<()> {
 /// Serve one authentication over `conn`, `session_id` already settled, and
 /// say who it was. A password is admitted only where `check` admits the
 /// user and the password offered; a key only where its signature verifies
-/// over the signed data, and what to make of the key is the gate's. A
+/// over the signed data and then `check` admits the user and the key. A
 /// client is answered at most [`MOST_ATTEMPTS`] requests.
 ///
 /// # Errors
@@ -210,7 +211,7 @@ fn admitted(conn: &mut Conn) -> Result<()> {
 pub fn serve(
     conn: &mut Conn,
     session_id: &[u8],
-    check: &dyn Fn(&Offered<'_>) -> bool,
+    check: &dyn Fn(&Offer<'_>) -> bool,
 ) -> Result<Authenticated> {
     let request = conn.expect(SERVICE_REQUEST, "a service request")?;
     if Cursor::new(&request[1..]).string()? != USERAUTH.as_bytes() {
@@ -243,7 +244,7 @@ pub fn serve(
 fn admit(
     message: &[u8],
     session_id: &[u8],
-    check: &dyn Fn(&Offered<'_>) -> bool,
+    check: &dyn Fn(&Offer<'_>) -> bool,
 ) -> Result<Option<Authenticated>> {
     let mut reader = Cursor::new(&message[1..]);
     let user = reader.text()?.to_string();
@@ -256,10 +257,10 @@ fn admit(
                 return Ok(None);
             }
             let secret = reader.text()?;
-            if !check(&Offered {
+            if !check(&Offer::Password(Offered {
                 user: &user,
                 secret,
-            }) {
+            })) {
                 return Ok(None);
             }
             Ok(Some(Authenticated {
@@ -284,6 +285,14 @@ fn admit(
                 )));
             }
             key.verify(&signed, signature)?;
+            // The signature proves the client holds the key; whether the
+            // key is the user's is the check's to say.
+            if !check(&Offer::Key(OfferedKey {
+                user: &user,
+                key: blob,
+            })) {
+                return Ok(None);
+            }
             Ok(Some(Authenticated {
                 user,
                 fingerprint: Some(key.fingerprint()),
@@ -298,7 +307,7 @@ fn admit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use net::login::{nobody, only};
+    use net::login::{nobody, only, only_key};
 
     #[test]
     fn signed_data_reads_back_as_what_it_says() {
@@ -341,18 +350,53 @@ mod tests {
             message
         };
 
-        let who = admit(&request("xmip"), &session, &*nobody())
+        let check = only_key("xmip", public.blob());
+        let who = admit(&request("xmip"), &session, &*check)
             .expect("verified")
             .expect("admitted");
         assert_eq!(who.fingerprint, Some(public.fingerprint()));
         assert!(
-            admit(&request("xmip"), &[0u8; 32], &*nobody()).is_err(),
+            admit(&request("xmip"), &[0u8; 32], &*check).is_err(),
             "another session"
         );
         assert!(
-            admit(&request("someone"), &session, &*nobody()).is_err(),
+            admit(&request("someone"), &session, &*check).is_err(),
             "another user"
         );
+    }
+
+    #[test]
+    fn a_verified_key_the_check_does_not_admit_is_turned_down() {
+        let key = crate::kex::fresh_ed25519();
+        let public = PublicKey::ed25519(&key.verifying_key());
+        let session = [0x5au8; 32];
+        let signature = key::sign_ed25519(
+            &key,
+            &signed_data(&session, "orders", ED25519, public.blob()),
+        );
+        let mut request = Vec::new();
+        request
+            .byte(USERAUTH_REQUEST)
+            .string(b"orders")
+            .string(CONNECTION.as_bytes())
+            .string(PUBLICKEY.as_bytes())
+            .boolean(true)
+            .string(ED25519.as_bytes())
+            .string(public.blob())
+            .string(&signature);
+
+        for (check, why) in [
+            (nobody(), "a check that admits no one"),
+            (
+                only_key("payroll", public.blob()),
+                "the key is another user's",
+            ),
+            (only_key("orders", b"another key".to_vec()), "another key"),
+            (only("orders", "pencil"), "a check of passwords alone"),
+        ] {
+            let turned = admit(&request, &session, &*check).expect("verified");
+            assert!(turned.is_none(), "{why}");
+        }
     }
 
     fn password_request(user: &str, secret: &str) -> Vec<u8> {
