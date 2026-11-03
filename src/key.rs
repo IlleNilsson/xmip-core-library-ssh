@@ -18,6 +18,7 @@ use codec::CodecError;
 use codec::cursor::Cursor;
 use ed25519_dalek::Signer as _;
 use net::NetError;
+use p256::ecdsa::signature::Verifier as _;
 use rsa::sha2::Sha256;
 use rsa::signature::Verifier as _;
 
@@ -281,7 +282,7 @@ mod tests {
         let mut blob = Vec::new();
         blob.string(ECDSA_P256.as_bytes());
         blob.string(b"nistp256");
-        blob.string(signing.verifying_key().to_encoded_point(false).as_bytes());
+        blob.string(signing.verifying_key().to_sec1_point(false).as_bytes());
         let key = PublicKey::parse(&blob).expect("a key");
         let signature: p256::ecdsa::Signature = signing.sign(b"session");
         let (r, s) = signature.split_bytes();
