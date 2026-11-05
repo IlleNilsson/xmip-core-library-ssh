@@ -33,6 +33,6 @@ transport), the signature blob, the fingerprint and the signed data were
 written two or three times across the transport, the gate and the identifier
 (ADR-0050, amendments 2026-09-25 and 2026-09-28).
 
-`architecture.toml` carries the maturity.
+`architecture.xmip` carries the maturity.
 
 [RFC 4251]: https://www.rfc-editor.org/rfc/rfc4251
