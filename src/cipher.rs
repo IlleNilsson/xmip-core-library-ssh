@@ -12,10 +12,9 @@ use std::io::{BufReader, Read};
 use std::net::TcpStream;
 
 use aes::Aes256;
+use codec::digest::{HmacSha256, Sha256};
 use ctr::Ctr128BE;
 use ctr::cipher::{KeyIvInit, StreamCipher};
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::{Digest, Sha256};
 
 use net::NetError;
 
@@ -24,7 +23,6 @@ use crate::packet::MAX_PACKET;
 
 /// The cipher's block size: eight for the cleartext framing, sixteen for
 /// AES.
-type HmacSha256 = Hmac<Sha256>;
 type Aes256Ctr = Ctr128BE<Aes256>;
 
 /// One direction's sealing and opening.
@@ -46,10 +44,11 @@ pub trait Cipher: Send {
 /// no integrity code.
 struct Plain;
 
-/// The negotiated suite: AES-256 counter mode and a SHA-256 HMAC.
+/// The negotiated suite: AES-256 counter mode and a SHA-256 HMAC, keyed
+/// once for the direction and taken afresh for each packet.
 struct AesCtrHmac {
     cipher: Aes256Ctr,
-    integrity: Vec<u8>,
+    integrity: HmacSha256,
 }
 
 /// The cleartext cipher.
@@ -75,25 +74,29 @@ impl Cipher for Plain {
 }
 
 impl AesCtrHmac {
-    fn new(key: &[u8], iv: &[u8], integrity: Vec<u8>) -> Result<Self> {
+    fn new(key: &[u8], iv: &[u8], integrity: &[u8]) -> Result<Self> {
         let cipher = Aes256Ctr::new_from_slices(key, iv)
             .map_err(|_| NetError::new("an AES-256 key or IV of the wrong length"))?;
-        Ok(Self { cipher, integrity })
+        Ok(Self {
+            cipher,
+            integrity: HmacSha256::new(integrity),
+        })
     }
 
-    fn mac(&self, seq: u32, packet: &[u8]) -> Result<Vec<u8>> {
-        let mut mac = HmacSha256::new_from_slice(&self.integrity)
-            .map_err(|_| NetError::new("an HMAC key of the wrong length"))?;
+    /// The code over the sequence number `seq` then `packet`, to finish as
+    /// a tag or check one with.
+    fn mac(&self, seq: u32, packet: &[u8]) -> HmacSha256 {
+        let mut mac = self.integrity.clone();
         mac.update(&seq.to_be_bytes());
         mac.update(packet);
-        Ok(mac.finalize().into_bytes().to_vec())
+        mac
     }
 }
 
 impl Cipher for AesCtrHmac {
     fn seal(&mut self, seq: u32, payload: &[u8]) -> Result<Vec<u8>> {
         let mut packet = frame(payload, 16);
-        let tag = self.mac(seq, &packet)?;
+        let tag = self.mac(seq, &packet).finish();
         self.cipher.apply_keystream(&mut packet);
         packet.extend_from_slice(&tag);
         Ok(packet)
@@ -114,13 +117,11 @@ impl Cipher for AesCtrHmac {
         packet.extend_from_slice(&rest);
         let mut tag = vec![0u8; 32];
         read_exact(reader, &mut tag)?;
-        let mut mac = HmacSha256::new_from_slice(&self.integrity)
-            .map_err(|_| NetError::new("an HMAC key of the wrong length"))?;
-        mac.update(&seq.to_be_bytes());
-        mac.update(&packet);
-        mac.verify_slice(&tag).map_err(|_| {
-            NetError::new("a packet whose message authentication code did not agree")
-        })?;
+        if !self.mac(seq, &packet).verify(&tag) {
+            return Err(NetError::new(
+                "a packet whose message authentication code did not agree",
+            ));
+        }
         unframe(&packet[4..])
     }
 }
@@ -147,7 +148,7 @@ pub fn suite(
     let iv = derive(k, h, iv, session_id, 16);
     let key = derive(k, h, key, session_id, 32);
     let integrity = derive(k, h, mac, session_id, 32);
-    Ok(Box::new(AesCtrHmac::new(&key, &iv, integrity)?))
+    Ok(Box::new(AesCtrHmac::new(&key, &iv, &integrity)?))
 }
 
 /// Key material of `need` bytes for `letter`, extended by re-hashing as
@@ -157,16 +158,16 @@ fn derive(k: &[u8], h: &[u8], letter: u8, session_id: &[u8], need: usize) -> Vec
         let mut hash = Sha256::new();
         hash.update(k);
         hash.update(h);
-        hash.update([letter]);
+        hash.update(&[letter]);
         hash.update(session_id);
-        hash.finalize().to_vec()
+        hash.finish().to_vec()
     };
     while out.len() < need {
         let mut hash = Sha256::new();
         hash.update(k);
         hash.update(h);
         hash.update(&out);
-        out.extend_from_slice(&hash.finalize());
+        out.extend_from_slice(&hash.finish());
     }
     out.truncate(need);
     out
@@ -254,18 +255,18 @@ mod tests {
     #[test]
     fn a_sealed_packet_opens_only_under_its_own_sequence_number() {
         let (key, iv, mac) = ([7u8; 32], [3u8; 16], vec![9u8; 32]);
-        let mut sealer = AesCtrHmac::new(&key, &iv, mac.clone()).expect("cipher");
+        let mut sealer = AesCtrHmac::new(&key, &iv, &mac).expect("cipher");
         let wire = sealer.seal(5, b"a payload of some length").expect("seal");
         // A fresh opener with the same key opens the same stream position.
-        let mut opener = AesCtrHmac::new(&key, &iv, mac).expect("cipher");
+        let mut opener = AesCtrHmac::new(&key, &iv, &mac).expect("cipher");
         let tag_ok = {
-            let mut check = HmacSha256::new_from_slice(&[9u8; 32]).expect("mac");
+            let mut check = HmacSha256::new(&[9u8; 32]);
             check.update(&5u32.to_be_bytes());
             let mut decrypted = wire[..wire.len() - 32].to_vec();
-            let mut plain = AesCtrHmac::new(&key, &iv, vec![9u8; 32]).expect("c");
+            let mut plain = AesCtrHmac::new(&key, &iv, &[9u8; 32]).expect("c");
             plain.cipher.apply_keystream(&mut decrypted);
             check.update(&decrypted);
-            check.verify_slice(&wire[wire.len() - 32..]).is_ok()
+            check.verify(&wire[wire.len() - 32..])
         };
         assert!(tag_ok, "the code covers the sequence number and the packet");
         let _ = &mut opener;

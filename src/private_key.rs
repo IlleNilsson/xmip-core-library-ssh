@@ -27,19 +27,16 @@ const LABEL: &str = "OPENSSH PRIVATE KEY";
 /// under the wrong passphrase.
 pub fn ed25519(pem: &str) -> Result<ed25519_dalek::SigningKey, NetError> {
     let refused = |why: &str| NetError::new(format!("the SSH private key is refused: {why}"));
-    let body: String = pem
-        .lines()
-        .map(str::trim)
-        .skip_while(|line| *line != format!("-----BEGIN {LABEL}-----"))
-        .skip(1)
-        .take_while(|line| *line != format!("-----END {LABEL}-----"))
-        .collect();
-    if body.is_empty() {
-        return Err(refused(&format!(
-            "it is no '{LABEL}' block, which ssh-keygen writes"
-        )));
-    }
-    let bytes = codec::base64::decode(&body).map_err(|_| refused("its armor is not base64"))?;
+    let bytes = codec::pem::decode(LABEL, pem)
+        .map_err(|_| refused("its armor is not base64"))?
+        .into_iter()
+        .next()
+        .filter(|bytes| !bytes.is_empty())
+        .ok_or_else(|| {
+            refused(&format!(
+                "it is no '{LABEL}' block, which ssh-keygen writes"
+            ))
+        })?;
     let rest = bytes
         .strip_prefix(MAGIC)
         .ok_or_else(|| refused("it is not openssh-key-v1"))?;
@@ -113,17 +110,9 @@ fn written_as(key: &ed25519_dalek::SigningKey, cipher: &str, check: (u32, u32)) 
     whole.extend(1u32.to_be_bytes());
     whole.string(&blob).string(&private);
     private.fill(0);
-    let armored = codec::base64::encode(&whole);
+    let armored = codec::pem::encode_wrapped(LABEL, &whole, 70);
     whole.fill(0);
-    let lines: Vec<&str> = armored
-        .as_bytes()
-        .chunks(70)
-        .map(|line| core::str::from_utf8(line).unwrap_or_default())
-        .collect();
-    format!(
-        "-----BEGIN {LABEL}-----\n{}\n-----END {LABEL}-----\n",
-        lines.join("\n")
-    )
+    armored
 }
 
 #[cfg(test)]

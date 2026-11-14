@@ -4,7 +4,6 @@
 use core::fmt;
 
 use net::NetError;
-use sha2::{Digest, Sha256};
 
 const PREFIX: &str = "SHA256:";
 
@@ -17,7 +16,7 @@ impl Fingerprint {
     /// The fingerprint of the key `blob`.
     #[must_use]
     pub fn of(blob: &[u8]) -> Self {
-        Self(Sha256::digest(blob).into())
+        Self(codec::digest::sha256(blob))
     }
 
     /// Read `SHA256:<base64>`, the base64 with or without its padding.

@@ -13,7 +13,6 @@ use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
 use ed25519_dalek::SigningKey;
 use net::NetError;
-use sha2::{Digest, Sha256};
 use x25519_dalek::StaticSecret;
 
 use crate::key::{self, ED25519, PublicKey};
@@ -99,7 +98,7 @@ fn exchange_hash(parts: &HashParts<'_>) -> Vec<u8> {
         .string(parts.q_c)
         .string(parts.q_s)
         .bytes(parts.k_mpint);
-    Sha256::digest(&data).to_vec()
+    codec::digest::sha256(&data).to_vec()
 }
 
 /// The pieces the exchange hash is built from.
